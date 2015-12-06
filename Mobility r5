@@ -1,0 +1,358 @@
+/*
+08/06/2015 TARRo Mobility Platform Code r5
+Written by Jonivan Artates
+IVC Rescue Robotics 2015
+
+Changes: 
+-Approach Speed
+-Scan Speed
+-Access timing and behavior
+-Bump timing
+
+PIXY INFO: (http://cmucam.org/projects/cmucam5/wiki/Hooking_up_Pixy_to_a_Microcontroller_like_an_Arduino)
+The API consists of one call: getBlocks(), which returns the number of objects Pixy has detected. You can then look in the pixy.blocks[] array for information about each detected object (one array member for each detected object.) Each array member (i) contains the following fields:
+
+pixy.blocks[i].signature The signature number of the detected object (1-7)
+pixy.blocks[i].x The x location of the center of the detected object (0 to 319)
+pixy.blocks[i].y The y location of the center of the detected object (0 to 199)
+pixy.blocks[i].width The width of the detected object (1 to 320)
+pixy.blocks[i].height The height of the detected object (1 to 200)
+pixy.blocks[i].print() A member function that prints the detected object information to the serial port
+
+
+
+If you hover the mouse pointer over the "Data out port" text, a help string will be displayed that describes which value corresponds to which type of port.
+
+0: SPI - this is the default port that uses 3 wires (pins 1, 3, and 4 of the I/O connector) and is used to communicate with Arduino
+1: I2C - this is a multi-drop 2-wire port (pins 5 and 9 of the I/O connector) that allows a single master to communicate with up to 127 slaves (up to 127 Pixys).
+2: UART - this is the common "serial port" (pins 1 and 4 of the I/O connector). Pixy receives data via pin 1 (input) and transmits data via pin 4 (output).
+3: analog/digital x - this will output the x value of the largest detected object as an analog value between 0 and 3.3V (pin 3). It also outputs whether an object is detected or not as a digital signal (pin 1 of the I/O connector).
+4: analog/digital y - this will output the y value of the largest detected object as an analog value between 0 and 3.3V (pin 3). It also outputs whether an object is detected or not as a digital signal (pin 1 of the I/O connector).
+
+Analog/digital output
+Pixy has a single analog (DAC) output, so there are two modes for analog/digital output. Mode 3 outputs the x value of the center of the biggest detected object to pin 3 of the I/O connector.
+Mode 4 outputs the y value of the biggest detected object to pin 3 of the I/O connector. Pin 1 goes high (3.3V) when an object is detected, and low (0V) when no object is detected.
+
+Pin 1 is 0 to 3.3V signal output, can source/sink 5 mA.
+Pin 3 is 0 to 3.3V signal output, roughly 200 ohm impedance.
+Pin 3 voltage is directly, linearly proportional to the object position in the image (depending on the mode)
+In mode 3 (x mode) pin 3 is 0V if object is on the far left of the image and 3.3V is object on the far right (PixyMon perspective).
+In mode 4 (y mode) pin 3 is 0V if object is on the bottom of the image and 3.3V is object on the top (PixyMon perspective).
+
+Analog and digital output
+Pixy has a single analog (DAC) output, so there are two modes for analog/digital output.
+Mode 4 outputs the x value of the center of the biggest detected object to pin 3 of the I/O connector.
+Mode 5 outputs the y value of the biggest detected object to pin 3 of the I/O connector.
+Pin 1 goes high (3.3V) when an object is detected, and low (0V) when no object is detected.
+Pixy's digital output is 0 to 3.3V logic and can source/sink 5 mA.
+Pixy's analog (DAC) output ranges between 0 to 3.3V with roughly 200 ohm impedance.
+Pixy's analog (DAC) output voltage is directly, linearly proportional to the object position in the image (depending on the mode)
+In mode 4 (x mode) the analog output is 0V if object is on the far left of the image and 3.3V is object on the far right (PixyMon perspective).
+In mode 5 (y mode) the analog output is 0V if object is on the bottom of the image and 3.3V is object on the top (PixyMon perspective).
+Here's how to hook up your controller's ADC and digital I/O to Pixy:
+
+Pin 10 ➜ your controller's ground signal
+Pin 3 (DAC OUT) ➜ one of your controller's ADC input signals
+Pin 1 (GPIO0) ➜ one of your controller's digital input signals
+Note, all digital output signals on Pixy are 3.3V CMOS logic. All digital input signals on Pixy are 5V tolerant.
+
+
+ULTRASONIC INFO: (Maxbotics LV1000 datasheet)
+Analog output: (Vcc/512) / inch 
+5v input
+.0098v (9.8mV) / inch
+
+ANALOG PIN INFO: (arduino reference)
+AnalogRead: This means that it will map input voltages between 0 and 5 volts into integer values between 0 and 1023.
+This yields a resolution between readings of: 5 volts / 1024 units or, .0049 volts (4.9 mV) per unit.
+The input range and resolution can be changed using analogReference().
+*/
+
+
+//CODE:
+
+//Libraries:
+#include <Servo.h>     //servo library
+#include <SPI.h>       //SPI library
+#include <Pixy.h>      //PIXYcam llibrary
+
+//Objects:
+Pixy pixy;             //callout PIXY as object
+Servo motorl;          //ESC output 1, PWM
+Servo motorr;          //ESC output 2, PWM
+
+
+//Analog Input Pins:
+int analogPin1 = 1;    //potentiometer wiper (middle terminal) connected to analog pin A1 -- left most pot
+int analogPin2 = 2;    //potentiometer wiper (middle terminal) connected to analog pin A2 -- middle pot
+int analogPin3 = 3;    //potentiometer wiper (middle terminal) connected to analog pin A3 -- right most pot
+int blockposPin = 4;   //pin 3 from pixy, analog output of block centroid position (0v < blockposition < 3.3v) -- White wire, Orange stripe
+int distPin = 5;       //analog output from ultrasonic LV1000 -- Orange wire, White stripe
+
+//Digital Input Pins:
+int mode = 2;          //(HIGH)Autonomous or (LOW) manual mode -- 10k pull down, Green wire, White stripe
+int blockPin = 4;      //(HIGH)for blocks found -- 10k pull down, White wire, Green stripe, Red LED
+int bumpPin = 8;       //(HIGH) when bump sensor activated
+int foundPin = 9;      //(HIGH) from Raspberry Pi if QR found
+int fpin = 30;         //(HIGH)forward pin -- 10k pull down
+int bpin = 31;         //(HIGH)reverse pin -- 10k pull down
+int lpin = 32;         //(HIGH)left pin -- 10k pull down
+int rpin = 33;         //(HIGH)right pin -- 10k pull down
+
+
+//Internal:
+int y;                 //in RC mode, for soft start
+int time;              //in RC mode, for soft start
+int i = 0;             //number for largest block
+int xpos;              //horizontal position of block: (0v < xpos <3.3v)
+int xmiddle = 337;     //middle of Pixy Cam x-axis (mV)
+int distance;          //distance to block, ultrasonic
+int xerror;            //deviation from middle of x-axis, raw
+int xerrornew;         //deviation from middle of x-axis, current
+int xerrorold;         //deviation from middle of x-axis, last
+int xerrorsum;         //augemented error output of PID controller
+int Kp;                //Proportional error gain input
+int Kpx;               //output from Proportional controller
+int Ki;                //Integral error gain input
+int Kix;               //output from Integral controller
+int Kd;                //Derivative error gain input
+int Kdx;               //output from Derivative controller
+int msl;               //left motor ms for ESC
+int msr;               //right motor ms for ESC
+
+//VARIABLES:
+int mindist = 14;      //VARIABLE, MAX ALLOWABLE DISTANCE TO BLOCK (INCHES)
+int QRwait = 5;       //VARIABLE, TIME FOR QR TO READ (ms)
+int turn = 750;        //VARIABLE, TIME FOR 90 DEGREE TURN @ 1700/1200 (ms)
+
+//Setup:
+void setup()
+{
+//Input Assignment:
+ pinMode(mode, INPUT);              //selector for Auto/RC mode
+ pinMode(fpin, INPUT);              //pin 30, RC mode, forward
+ pinMode(bpin, INPUT);              //pin 31, RC mode, reverse
+ pinMode(lpin, INPUT);              //pin 32, RC mode, left
+ pinMode(rpin, INPUT);              //pin 33, RC mode, right
+ pinMode(blockPin, INPUT);          //pin 4
+ pinMode(bumpPin, INPUT);           //pin 8, bump sensor
+ pinMode(foundPin, INPUT);          //pin 9, QR found from Raspberry Pi
+
+//Output Assignment:
+ motorl.attach(50);                 //servo1 pin
+ motorr.attach(48);                 //servo2 pin
+ Serial.begin(9600);                //setup serial
+ Serial.print("Starting...\n");     //debug serial monitor
+ pixy.init();                       //initialize Pixycam
+
+//Internal Assignement:
+ xerrorold = 0;                     //initialize old error as 0
+}
+
+
+//Loops for Autonomous mode:
+void approach(){                                        //autonomous mode approach
+  Serial.println("Approaching...");                     //debug value
+  msl = 1950 - xerrorsum;                               //left motor speed, error augmented
+  msr = 1950 + xerrorsum;                               //right motor speed, error augmented
+  msl = constrain(msl,1500,1750);                       //constrain left motor to forward speeds
+  msr = constrain(msr,1500,1750);                       //constraing right motor to forward speeds
+  motorl.writeMicroseconds(msl);                        //output left speed to ESC
+  motorr.writeMicroseconds(msr);                        //output right speed to ESC
+  Serial.print("Left speed: ");                         //debug value
+  Serial.println(msl);                                  //debug value
+  Serial.print("Right speed: ");                        //debug value
+  Serial.println(msr);                                  //debug value
+}
+void scan(){                                            //autonomous mode slow rotation for scanning, CW
+  Serial.println("Scanning...");                        //debug value
+  motorl.writeMicroseconds(1200);                       //output left speed to ESC
+  motorr.writeMicroseconds(1800);                       //output right speed to ESC
+}
+void access(){
+  Serial.println("Accessing...");                       //debug value
+  Serial.print("Distance(in): ");                       //debug value                     
+  Serial.println(distance);                             //debug block distance
+  motorl.writeMicroseconds(1500);                       //stopped, delay for qr reading
+  motorr.writeMicroseconds(1500); 
+
+  for (int i=0; i <= QRwait; i++){
+        Serial.print(QRwait-i); 
+    Serial.print("...");
+      if (digitalRead(foundPin) == HIGH){            
+        Serial.println("QR Found on Raspberry Pi.");    //debug value//Autonomous mode: Pin 2 HIGH
+        break;
+      }
+    motorl.writeMicroseconds(1400);                     //stopped, delay for qr reading
+    motorr.writeMicroseconds(1400);                       
+    delay(100);  
+
+  } 
+  motorl.writeMicroseconds(1500);                     
+  motorr.writeMicroseconds(1500);  
+  delay(2000);
+  
+  Serial.println();                                     //debug value
+  Serial.println("Accessment complete.");               //debug value
+  Serial.println("Reversing... ");                      //debug value
+  motorl.writeMicroseconds(1400);                       //reverse for 2 seconds
+  motorr.writeMicroseconds(1400);      
+  Serial.print("New search in: ");                      //debug value                 
+  for (int i=0; i <= 1; i++){
+    Serial.print(1-i); 
+    Serial.print("...");
+    delay(500);  
+  } 
+
+  Serial.println();                                     //debug value
+  Serial.println("Rotating...");                        //debug value
+  motorl.writeMicroseconds(1300);                       //rotate CW, 90 degrees
+  motorr.writeMicroseconds(1700);                       
+  delay(turn);                                          //end of access, TARRo looks for next Block
+}
+void bump(){
+  Serial.println("Reversing... ");                      //debug value
+  motorl.writeMicroseconds(1400);                       //reverse for 2 seconds
+  motorr.writeMicroseconds(1400);      
+  Serial.print("New search in: ");                      //debug value                 
+  for (int i=0; i <= 1; i++){
+    Serial.print(1-i); 
+    Serial.print("...");
+    delay(1000);  
+  } 
+  Serial.println();                                     //debug value
+  Serial.println("Rotating...");                        //debug value
+  motorl.writeMicroseconds(1300);                       //rotate CW, 90 degrees
+  motorr.writeMicroseconds(1700);                       
+  delay(turn);    
+ }
+
+//Loops for RC mode:
+void forward(){                                         //manual forward with soft start
+  Serial.println("Forward");                            //debug value
+  y=1500+(.4*(millis()-time));                          //soft start augment
+  y=min(y,1800);                                        //constraing max speed
+  motorl.writeMicroseconds(y);                          //output left speed to ESC
+  motorr.writeMicroseconds(y);                          //output right speed to ESC
+}
+void reverse(){                                         //manual reverse with soft start
+  Serial.println("Reverse");                            //debug value
+  y=1500-(.4*(millis()-time));                          //soft start augment
+  y=max(y,1200);                                        //constrain min speed
+  motorl.writeMicroseconds(y);                          //output left speed to ESC
+  motorr.writeMicroseconds(y);                          //output right speed to ESC
+}
+void left(){                                            //manual mode turn left
+  Serial.println("Left");                               //debug value
+  motorl.writeMicroseconds(1200);                       //output left speed to ESC
+  motorr.writeMicroseconds(1800);                       //output right speed to ESC
+}
+void right(){                                           //manual mode turn right
+  Serial.println("Right");                              //debug value
+  motorl.writeMicroseconds(1800);                       //output left speed to ESC
+  motorr.writeMicroseconds(1200);                       //output right speed to ESC
+}
+void rest(){                                            //manual mode neutral
+  Serial.println("Neutral");                            //debug value
+  motorl.writeMicroseconds(1500);                       //output left speed to ESC
+  motorr.writeMicroseconds(1500);                       //output right speed to ESC
+}
+
+
+//MAIN LOOP:
+void loop() {  
+if (millis() < 10000){                                               //initial calibration for ESC
+  motorl.writeMicroseconds(1500);                                   //output left speed to ESC
+  motorr.writeMicroseconds(1500);                                   //output right speed to ESC
+  Serial.println("Calibrating");                                    //debug value
+}
+if (digitalRead(mode) == HIGH){                                     //Autonomous mode: Pin 2 HIGH
+  Serial.println("Autonomous");                                     //debug value
+//Find Blocks   
+  Serial.println("Awaiting blocks...");                             //debug value
+  //Get data from the Pixy. 
+  if (digitalRead(bumpPin) == HIGH){                                //Autonomous mode: Pin 2 HIGH
+    Serial.println("BUMP SENSOR TRIGGERRED");                        //debug value
+    bump();                                                         //go into bump loop
+  }
+  if (digitalRead(blockPin) == HIGH){                               //If Blocks present: pin 4 (HIGH)
+    Serial.println("Block found.");                                 //debug value
+    distance = (analogRead(distPin));                               //finding distance from block using ultrasonic, converted to inches
+    distance = distance/2;                                          //scale factor: 98mV per inch/49mV per unit = 2
+    if (distance <= mindist){                                       //Conditional: TARRo too close to block
+      access();                                                     //run through access loop
+    }
+    xpos = analogRead(blockposPin);                                 //finds centroid of block, Pin 6: 0 < x < 681 (0v <x< 3.3v)
+    xerror = xpos - xmiddle;                                        //calculates error from center screen
+    Serial.print("Distance(in): ");                                       
+    Serial.println(distance);                                       //debug block distance
+    Serial.print("Xpos(v): ");                 
+    Serial.println(xpos*.0049);                                     //debug xerror
+    Serial.print("Error: ");                 
+    Serial.println(xerror);                                         //debug xerror
+  
+    //PID 
+      xerrornew = xerror;                                           //samples the current xerror
+      
+      //Proportional error: Kp
+      Kp = analogRead(1);                                           //read the input pin
+      Kp = Kp/200;                                                  //scales Kp
+      Serial.print("Kp: ");                                         //debug value
+      Serial.println(Kp);                                           //debug value
+      Kpx = Kp*xerrornew;                                           //output of Kp function
+    
+      //Integral error: Ki
+      Ki = analogRead(2);                                           //read the input pin
+      Ki = Ki/500;                                                  //scales Ki
+      Serial.print("Ki: ");                                         //debug value
+      Serial.println(Ki);                                           //debug value
+      Kix = Ki*.5*((xerrornew*xerrornew) - (xerrorold*xerrorold));  //output of Ki function
+     
+      //Derivative Error: Kd
+      Kd = analogRead(3);                                           //read the input pin
+      Kd = Kd/500;                                                  //scales Kd
+      Serial.print("Kd: ");                                         //debug value
+      Serial.println(Kd);                                           //debug value
+      Kdx = Kd*(xerrornew - xerrorold);                             //output of Kd function
+      
+      xerrorold = xerrornew;                                        //sets the xerrorold for the next loop
+  
+      xerrorsum = Kpx+Kix+Kdx;                                      //output of PID: augmented xerror
+      Serial.print("Sum of PID: ");                                 //debug value
+      Serial.println(xerrorsum);                                    //debug value
+
+        //Output to motors
+        approach();                                                 //approached block
+  }   
+    
+//If no Blocks 
+  else{                                                             //scan for blocks
+    Serial.println("No Blocks.");                                   //debug value
+    scan();                                                         //slow rotation, CW
+  } 
+ }
+ 
+
+else {                                                              //Manual mode: reads Pin 2 LOW
+    Serial.println("Manual");                                       //debug value
+    if (digitalRead(fpin) == HIGH){                                 //forward pin turned HIGH from RC
+      forward();                                                    //moves TARRo forward, soft start
+    }
+    else if (digitalRead(bpin) == HIGH){                            //reveres pin turne HIGH from RC
+      reverse();                                                    //moved TARRo backward, soft start
+    }
+    else if (digitalRead(lpin) == HIGH){                            //left pin turned HIGH from RC
+      left();                                                       //turns TARRo left
+      time = millis();                                              //reset timer
+    }
+    else if (digitalRead(rpin) == HIGH){                            //right pin turned HIGH from RC
+      right();                                                      //turns TARRo right
+      time = millis();                                              //reset timer
+    }
+    else{                                                           //no signal from RC
+      rest();                                                       //sets motor to neutral
+      time = millis();                                              //reset timer
+    }  
+  }
+Serial.println();                                                   //serial spacer before next run through
+}
